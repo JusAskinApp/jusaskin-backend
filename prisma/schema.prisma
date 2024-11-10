@@ -1,0 +1,45 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                 Int      @id @default(autoincrement())
+  name               String
+  title              String?
+  email              String   @unique
+  password           String
+  type               String   @default("Student") // "Student" or "Professional"
+  profileDetails     Json?
+  ratings            Float    @default(0.0)
+  points             Int      @default(0)
+  badges             String?
+  verificationStatus String   @default("Pending")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @default(now())
+
+  professionalInfo Professional? @relation("UserToProfessional")
+
+   @@map("users")
+}
+
+model Professional {
+  id             Int     @id @default(autoincrement())
+  userId         Int     @unique
+  expertise      Json? // JSON field for various expertise
+  experience     String // E.g., "1 year", "2 years"
+  availability   String? // Availability status or details
+  profileDetails Json? // Additional professional-specific details
+
+  user User @relation("UserToProfessional", fields: [userId], references: [id])
+}
