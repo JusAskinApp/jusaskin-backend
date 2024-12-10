@@ -1,11 +1,13 @@
 const jwt = require('jsonwebtoken');
 
-const generateToken = (payload, expiresIn = process.env.JWT_EXPIRATION) => {
+// Function to generate token with user information
+const generateToken = (user, expiresIn = process.env.JWT_EXPIRATION) => {
+  const payload = {
+    UserID: user.userId ,
+    username: user.username
+  };
+
   return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn });
 };
 
-const verifyToken = (token) => {
-  return jwt.verify(token, process.env.JWT_SECRET);
-};
-
-module.exports = { generateToken, verifyToken };
+module.exports = { generateToken };

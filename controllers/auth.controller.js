@@ -6,42 +6,56 @@ const { sendOtpEmail } = require('../utils/email');
 const prisma = new PrismaClient();
 
 const register = async (req, res) => {
-    const { name, email, password, type } = req.body;
+  const { name, email, password, type, expertise, experience, availability,interests } = req.body;
+
   
-    const existingUser = await prisma.user.findUnique({
-      where: {
-        email: email,
+  const existingUser = await prisma.user.findUnique({
+    where: {
+      email: email,
+    },
+  });
+
+  if (existingUser) {
+    return res.status(400).json({ error: 'User with this email already exists' });
+  }
+
+  const hashedPassword = await hashPassword(password);
+
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const otpExpiration = Date.now() + parseInt(process.env.OTP_EXPIRATION);
+
+  try {
+    const user = await prisma.user.create({
+      data: {
+        name,
+        email,
+        password: hashedPassword,
+        type,
+        verificationStatus: "Pending",
+        interests: interests ? JSON.parse(interests) : null,
+        profileDetails: { otp, otpExpiration },
       },
     });
-  
-    if (existingUser) {
-      return res.status(400).json({ error: 'User with this email already exists' });
-    }
-  
-    const hashedPassword = await hashPassword(password);
-  
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpiration = Date.now() + parseInt(process.env.OTP_EXPIRATION);
-  
-    try {
-      const user = await prisma.user.create({
+
+    if (type === "Professional") {
+      await prisma.professional.create({
         data: {
-          name,
-          email,
-          password: hashedPassword,
-          type,
-          verificationStatus: "Pending",
-          profileDetails: { otp, otpExpiration },
+          userId: user.UserID, 
+          expertise: expertise ? JSON.parse(expertise) : null, 
+          experience: experience || "",
+          availability: availability || null,
         },
       });
-  
-      await sendOtpEmail(email, otp);
-  
-      res.status(201).json({ message: 'User created. OTP sent to email.' });
-    } catch (error) {
-      res.status(500).json({ error: 'User registration failed', details: error.message });
     }
-  };
+
+    await sendOtpEmail(email, otp);
+
+    res.status(201).json({ message: 'User created. OTP sent to email.' });
+  } catch (error) {
+    res.status(500).json({ error: 'User registration failed', details: error.message });
+  }
+};
+
   
 
 // OTP Verification
@@ -77,11 +91,11 @@ const login = async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const token = generateToken({ userId: user.id });
+    const token = generateToken({ userId: user.UserID, username: user.name });
     res.status(200).json({
         token,
         user: {
-          id: user.id,
+          id: user.UserID,
           name: user.name,
           email: user.email,
           type: user.type,
@@ -93,7 +107,6 @@ const login = async (req, res) => {
   }
 };
 
-// Password Reset Request (OTP for password reset)
 const requestPasswordReset = async (req, res) => {
   const { email } = req.body;
 
