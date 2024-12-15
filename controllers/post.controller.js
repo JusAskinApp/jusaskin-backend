@@ -26,7 +26,7 @@ const createPost = async (req, res) => {
     let parsedTags = [];
     if (tags) {
       try {
-        parsedTags = JSON.parse(tags); // Attempt to parse the string into JSON
+        parsedTags = JSON.parse(tags); 
         if (!Array.isArray(parsedTags)) {
           return res.status(400).json({ success: false, message: 'Tags must be a valid JSON array' });
         }
@@ -150,7 +150,6 @@ const deletePost = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized to delete this post' });
     }
 
-    // Delete the post
     await prisma.post.delete({
       where: { PostID: postID },
     });
@@ -163,23 +162,101 @@ const deletePost = async (req, res) => {
 };
 
 
+// Function to get user interests from the database
+const getUserInterests = async (userId) => {
+  const user = await prisma.user.findUnique({
+    where: { UserID: userId },
+    select: { interests: true },
+  });
+  return user ? (user.interests || []) : [];
+};
+
+// Function to get the post IDs that the user has already viewed
+const getViewedPostIds = async (userId) => {
+  const viewedPostIds = await prisma.viewedPost.findMany({
+    where: { UserID: userId },
+    select: { PostID: true },
+  });
+  return viewedPostIds.map((viewed) => `'${viewed.PostID}'`).join(',');
+};
+
+// Function to get recommended posts based on user interests and excluding already viewed posts
+const getRecommendedPostsByInterests = async (userTags, viewedIds) => {
+  const query = `
+    SELECT 
+      p."PostID",
+      p."title",
+      p."description",
+      p."dateCreated",
+      p."tags",
+      p."media",
+      c."CommentID",
+      c."content" AS "commentContent",
+      c."dateCreated" AS "commentDate",
+      u."UserID" AS "commentUserID",
+      u."name" AS "commentUsername"
+    FROM 
+      posts p
+    LEFT JOIN 
+      comments c ON p."PostID" = c."PostID"
+    LEFT JOIN 
+      users u ON c."UserID" = u."UserID"
+    WHERE 
+      p.tags::jsonb ?| array[${userTags.map((tag) => `'${tag.toLowerCase()}'`).join(",")}]
+      ${viewedIds != '' && viewedIds != null ? 'AND p."PostID" NOT IN (${viewedIds})' : ''}
+    ORDER BY 
+      p."dateCreated" DESC
+    LIMIT 10;
+  `;
+  return prisma.$queryRawUnsafe(query);
+};
+
+// Function to get random posts if no recommended posts are found
+const getRandomPosts = async () => {
+  const randomQuery = `
+    SELECT 
+      p."PostID",
+      p."title",
+      p."description",
+      p."dateCreated",
+      p."tags",
+      p."media",
+      c."CommentID",
+      c."content" AS "commentContent",
+      c."dateCreated" AS "commentDate",
+      u."UserID" AS "commentUserID",
+      u."name" AS "commentUsername"
+    FROM 
+      posts p
+    LEFT JOIN 
+      comments c ON p."PostID" = c."PostID"
+    LEFT JOIN 
+      users u ON c."UserID" = u."UserID"
+    ORDER BY 
+      RANDOM() 
+    LIMIT 10;
+  `;
+  return prisma.$queryRawUnsafe(randomQuery);
+};
+
+// Main API function to get recommended posts
 const getRecommendedPosts = async (req, res) => {
   try {
-    const userId = req.user.UserID; 
-    
-    const user = await prisma.user.findUnique({
-      where: { UserID: userId },
-      select: { interests: true }, 
-    });
+    const userId = req.user.UserID;
 
-    if (!user || !user.interests || user.interests.length === 0) {
-      return res.status(200).json({ success: true, posts: [] }); 
+    const userInterests = await getUserInterests(userId);
+    let recommendedPosts = [];
+
+    if (userInterests.length > 0) {
+      const viewedIds = await getViewedPostIds(userId);
+      recommendedPosts = await getRecommendedPostsByInterests(userInterests, viewedIds);
+
+      if (recommendedPosts.length === 0) {
+        recommendedPosts = await getRandomPosts();
+      }
+    } else {
+      recommendedPosts = await getRandomPosts();
     }
-
-    const userTags = user.interests; 
-    let query = `SELECT * FROM posts WHERE tags::jsonb ?| array[${userTags.map((tag) => `'${tag.toLowerCase()}'`).join(",")}] ORDER BY "dateCreated" DESC LIMIT 10;`
-
-    const recommendedPosts = await prisma.$queryRawUnsafe(query);
 
     res.status(200).json({ success: true, posts: recommendedPosts });
   } catch (error) {
@@ -189,6 +266,142 @@ const getRecommendedPosts = async (req, res) => {
 };
 
 
+/////////////////////
+
+const markPostAsViewed = async (userId, postId) => {
+  try {
+    await prisma.viewedPost.upsert({
+      where: {
+        UserID_PostID: {
+          UserID: userId,
+          PostID: postId,
+        },
+      },
+      update: {
+        dateViewed: new Date(), // Update timestamp if already viewed
+      },
+      create: {
+        UserID: userId,
+        PostID: postId,
+      },
+    });
+    console.log(`Post ${postId} marked as viewed for user ${userId}`);
+  } catch (error) {
+    console.error("Error marking post as viewed:", error);
+  }
+};
+
+
+const markPostViewedHandler = async (req, res) => {
+  try {
+    const userId = req.user.UserID;
+    const {postId} = req.body;
+
+    await markPostAsViewed(userId, postId); 
+
+    res.status(200).json({ success: true, message: 'Post marked as viewed' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Failed to mark post as viewed' });
+  }
+};
+
+
+
+
+// post save/unsave logic
+
+const saveOrUnsavePost = async (req, res) => {
+  try {
+    const userId = req.user.UserID; 
+    const { postId } = req.body; 
+
+    const postExists = await prisma.post.findUnique({
+      where: { PostID: postId },
+    });
+
+    if (!postExists) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
+    const savedPost = await prisma.savedPost.findUnique({
+      where: {
+        UserID_PostID: { UserID: userId, PostID: postId }, 
+      },
+    });
+
+    if (savedPost) {
+      await prisma.savedPost.delete({
+        where: {
+          UserID_PostID: { UserID: userId, PostID: postId },
+        },
+      });
+      return res.status(200).json({
+        success: true,
+        message: "Post unsaved successfully",
+      });
+    } else {
+      await prisma.savedPost.create({
+        data: {
+          UserID: userId,
+          PostID: postId,
+        },
+      });
+      return res.status(200).json({
+        success: true,
+        message: "Post saved successfully",
+      });
+    }
+  } catch (error) {
+    console.error("Error saving/unsaving post:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "An error occurred", details: error.message });
+  }
+};
+
+
+///////// retrieve saved posts ///////////
+
+const getSavedPosts = async (req, res) => {
+  try {
+    const userId = req.user.UserID;
+
+    const query = `
+      SELECT 
+        p."PostID",
+        p."title",
+        p."description",
+        p."dateCreated",
+        p."tags",
+        p."media",
+        c."CommentID",
+        c."content" AS "commentContent",
+        c."dateCreated" AS "commentDate",
+        u."UserID" AS "commentUserID",
+        u."name" AS "commentUsername"
+      FROM 
+        saved_posts sp
+      INNER JOIN 
+        posts p ON sp."PostID" = p."PostID"
+      LEFT JOIN 
+        comments c ON p."PostID" = c."PostID"
+      LEFT JOIN 
+        users u ON c."UserID" = u."UserID"
+      WHERE 
+        sp."UserID" = $1
+      ORDER BY 
+        sp."dateSaved" DESC;
+    `;
+
+    const savedPosts = await prisma.$queryRawUnsafe(query, userId);
+
+    res.status(200).json({ success: true, posts: savedPosts });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Failed to retrieve saved posts', details: error.message });
+  }
+};
 
 // comments logic
 
@@ -196,7 +409,6 @@ const createComment = async (req, res) => {
   try {
     const { PostID, content } = req.body;
 
-    // Check if the post exists
     const existingPost = await prisma.post.findUnique({
       where: { PostID },
     });
@@ -205,16 +417,14 @@ const createComment = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Post not found' });
     }
 
-    // Create the comment
     const comment = await prisma.comment.create({
       data: {
         PostID,
-        UserID: req.user.UserID, // logged-in user's ID
+        UserID: req.user.UserID, 
         content,
       },
     });
 
-    // Increment comment count on the post
     await prisma.post.update({
       where: { PostID },
       data: { commentCount: { increment: 1 } },
@@ -232,7 +442,6 @@ const updateComment = async (req, res) => {
     const { content } = req.body;
     const { commentID } = req.params;
 
-    // Fetch the comment to ensure the user owns it
     const existingComment = await prisma.comment.findUnique({
       where: { CommentID: commentID },
     });
@@ -245,7 +454,6 @@ const updateComment = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized to edit this comment' });
     }
 
-    // Update the comment
     const updatedComment = await prisma.comment.update({
       where: { CommentID: commentID },
       data: { content },
@@ -262,7 +470,6 @@ const deleteComment = async (req, res) => {
   try {
     const { commentID } = req.params;
 
-    // Fetch the comment to ensure the user owns it
     const existingComment = await prisma.comment.findUnique({
       where: { CommentID: commentID },
     });
@@ -275,12 +482,10 @@ const deleteComment = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized to delete this comment' });
     }
 
-    // Delete the comment
     await prisma.comment.delete({
       where: { CommentID: commentID },
     });
 
-    // Decrement comment count on the post
     await prisma.post.update({
       where: { PostID: existingComment.PostID },
       data: { commentCount: { decrement: 1 } },
@@ -299,7 +504,6 @@ const toggleLikePost = async (req, res) => {
     const { postID } = req.params;
     const { action } = req.body; // "like" or "unlike"
 
-    // Check if the post exists
     const post = await prisma.post.findUnique({
       where: { PostID: postID },
     });
@@ -334,9 +538,6 @@ const toggleLikePost = async (req, res) => {
 
 
 
-  
-  
-
 module.exports = {
   upload,
   createPost,
@@ -346,5 +547,8 @@ module.exports = {
   createComment,
   deleteComment,
   updateComment,
-  toggleLikePost
+  toggleLikePost,
+  saveOrUnsavePost,
+  markPostViewedHandler,
+  getSavedPosts
 };

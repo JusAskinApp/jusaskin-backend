@@ -28,6 +28,7 @@ model User {
   savedPosts         SavedPost[]
   UserGroup          UserGroup[]
   Comment            Comment[]
+  ViewedPost         ViewedPost[]
 
   @@map("users")
 }
@@ -63,9 +64,22 @@ model Post {
   sharedByPosts Post[]      @relation("SharedPost")
   savedByUsers  SavedPost[]
 
-  comments Comment[] @relation("PostToComments")
+  comments   Comment[]    @relation("PostToComments")
+  ViewedPost ViewedPost[]
 
   @@map("posts")
+}
+
+model ViewedPost {
+  ViewedPostID String   @id @default(uuid())
+  UserID       String
+  PostID       String
+  dateViewed   DateTime @default(now())
+  user         User     @relation(fields: [UserID], references: [UserID])
+  post         Post     @relation(fields: [PostID], references: [PostID])
+
+  @@unique([UserID, PostID]) // Composite key to ensure no duplicate records
+  @@map("viewed_posts")
 }
 
 model Comment {
@@ -90,6 +104,7 @@ model SavedPost {
   post        Post     @relation(fields: [PostID], references: [PostID])
   user        User     @relation(fields: [UserID], references: [UserID])
 
+  @@unique([UserID, PostID], name: "UserID_PostID")
   @@map("saved_posts")
 }
 
